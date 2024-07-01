@@ -1,7 +1,3 @@
-"""
-@author: Maziar Raissi
-"""
-
 import tensorflow as tf
 import numpy as np
 import scipy.io
@@ -12,13 +8,6 @@ from utilities import neural_net, Navier_Stokes_2D, Gradient_Velocity_2D, \
                       tf_session, mean_squared_error, relative_error
 
 class HFM(object):
-    # notational conventions
-    # _tf: placeholders for input/output data and points used to regress the equations
-    # _pred: output of neural network
-    # _eqns: points used to regress the equations
-    # _data: input-output data
-    # _inlet: input-output data at the inlet
-    # _star: preditions
     
     def __init__(self, t_data, x_data, y_data, c_data,
                        t_eqns, x_eqns, y_eqns,
@@ -26,25 +15,20 @@ class HFM(object):
                        layers, batch_size,
                        Pec, Rey):
         
-        # specs
         self.layers = layers
         self.batch_size = batch_size
         
-        # flow properties
         self.Pec = Pec
         self.Rey = Rey
         
-        # data
         [self.t_data, self.x_data, self.y_data, self.c_data] = [t_data, x_data, y_data, c_data]
         [self.t_eqns, self.x_eqns, self.y_eqns] = [t_eqns, x_eqns, y_eqns]
         [self.t_inlet, self.x_inlet, self.y_inlet, self.u_inlet, self.v_inlet] = [t_inlet, x_inlet, y_inlet, u_inlet, v_inlet]
         
-        # placeholders
-        [self.t_data_tf, self.x_data_tf, self.y_data_tf, self.c_data_tf] = [tf.placeholder(tf.float32, shape=[None, 1]) for _ in range(4)]
-        [self.t_eqns_tf, self.x_eqns_tf, self.y_eqns_tf] = [tf.placeholder(tf.float32, shape=[None, 1]) for _ in range(3)]
-        [self.t_inlet_tf, self.x_inlet_tf, self.y_inlet_tf, self.u_inlet_tf, self.v_inlet_tf] = [tf.placeholder(tf.float32, shape=[None, 1]) for _ in range(5)]
+        [self.t_data_tf, self.x_data_tf, self.y_data_tf, self.c_data_tf] = [tf.convert_to_tensor(t_data, dtype=tf.float32), tf.convert_to_tensor(x_data, dtype=tf.float32), tf.convert_to_tensor(y_data, dtype=tf.float32), tf.convert_to_tensor(c_data, dtype=tf.float32)]
+        [self.t_eqns_tf, self.x_eqns_tf, self.y_eqns_tf] = [tf.convert_to_tensor(t_eqns, dtype=tf.float32), tf.convert_to_tensor(x_eqns, dtype=tf.float32), tf.convert_to_tensor(y_eqns, dtype=tf.float32)]
+        [self.t_inlet_tf, self.x_inlet_tf, self.y_inlet_tf, self.u_inlet_tf, self.v_inlet_tf] = [tf.convert_to_tensor(t_inlet, dtype=tf.float32), tf.convert_to_tensor(x_inlet, dtype=tf.float32), tf.convert_to_tensor(y_inlet, dtype=tf.float32), tf.convert_to_tensor(u_inlet, dtype=tf.float32), tf.convert_to_tensor(v_inlet, dtype=tf.float32)]
         
-        # physics "uninformed" neural networks
         self.net_cuvp = neural_net(self.t_data, self.x_data, self.y_data, layers = self.layers)
         
         [self.c_data_pred,
@@ -54,7 +38,6 @@ class HFM(object):
                                            self.x_data_tf,
                                            self.y_data_tf)
         
-        # physics "uninformed" neural networks (data at the inlet)
         [_,
          self.u_inlet_pred,
          self.v_inlet_pred,
@@ -62,7 +45,6 @@ class HFM(object):
                             self.x_inlet_tf,
                             self.y_inlet_tf)
         
-        # physics "informed" neural networks
         [self.c_eqns_pred,
          self.u_eqns_pred,
          self.v_eqns_pred,
@@ -83,7 +65,6 @@ class HFM(object):
                                                self.Pec,
                                                self.Rey)
         
-        # gradients required for the lift and drag forces
         [self.u_x_eqns_pred,
          self.v_x_eqns_pred,
          self.u_y_eqns_pred,
@@ -92,7 +73,6 @@ class HFM(object):
                                                     self.x_eqns_tf,
                                                     self.y_eqns_tf)
         
-        # loss
         self.loss = mean_squared_error(self.c_data_pred, self.c_data_tf) + \
                     mean_squared_error(self.u_inlet_pred, self.u_inlet_tf) + \
                     mean_squared_error(self.v_inlet_pred, self.v_inlet_tf) + \
@@ -100,12 +80,15 @@ class HFM(object):
                     mean_squared_error(self.e2_eqns_pred, 0.0) + \
                     mean_squared_error(self.e3_eqns_pred, 0.0) + \
                     mean_squared_error(self.e4_eqns_pred, 0.0)
-        
-        # optimizers
-        self.learning_rate = tf.placeholder(tf.float32, shape=[])
-        self.optimizer = tf.train.AdamOptimizer(learning_rate = self.learning_rate)
-        self.train_op = self.optimizer.minimize(self.loss)
-        
+        def train_step():
+            with tf.GradientTape() as tape:
+                loss_value = self.loss()  # Call the loss function to get the loss value
+            gradients = tape.gradient(loss_value, self.trainable_variables)
+            self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+            return loss_value
+        self.learning_rate = tf.Variable(0.0, trainable=False, dtype=tf.float32)
+        self.optimizer = tf.optimizers.Adam(learning_rate=self.learning_rate)
+        self.train_op = train_step()
         self.sess = tf_session()
     
     def train(self, total_time, learning_rate):
@@ -180,21 +163,21 @@ class HFM(object):
         
         viscosity = (1.0/self.Rey)
         
-        theta = np.linspace(0.0,2*np.pi,200)[:,None] # N x 1
+        theta = np.linspace(0.0,2*np.pi,200)[:,None] 
         d_theta = theta[1,0] - theta[0,0]
-        x_cyl = 0.5*np.cos(theta) # N x 1
-        y_cyl = 0.5*np.sin(theta) # N x 1
+        x_cyl = 0.5*np.cos(theta) 
+        y_cyl = 0.5*np.sin(theta) 
             
         N = x_cyl.shape[0]
         T = t_cyl.shape[0]
         
-        T_star = np.tile(t_cyl, (1,N)).T # N x T
-        X_star = np.tile(x_cyl, (1,T)) # N x T
-        Y_star = np.tile(y_cyl, (1,T)) # N x T
+        T_star = np.tile(t_cyl, (1,N)).T 
+        X_star = np.tile(x_cyl, (1,T)) 
+        Y_star = np.tile(y_cyl, (1,T)) 
         
-        t_star = np.reshape(T_star,[-1,1]) # NT x 1
-        x_star = np.reshape(X_star,[-1,1]) # NT x 1
-        y_star = np.reshape(Y_star,[-1,1]) # NT x 1
+        t_star = np.reshape(T_star,[-1,1]) 
+        x_star = np.reshape(X_star,[-1,1]) 
+        y_star = np.reshape(Y_star,[-1,1]) 
         
         tf_dict = {self.t_eqns_tf: t_star, self.x_eqns_tf: x_star, self.y_eqns_tf: y_star}
         
@@ -218,13 +201,12 @@ class HFM(object):
         INT0 = (-P_star[0:-1,:] + 2*viscosity*U_x_star[0:-1,:])*X_star[0:-1,:] + viscosity*(U_y_star[0:-1,:] + V_x_star[0:-1,:])*Y_star[0:-1,:]
         INT1 = (-P_star[1: , :] + 2*viscosity*U_x_star[1: , :])*X_star[1: , :] + viscosity*(U_y_star[1: , :] + V_x_star[1: , :])*Y_star[1: , :]
             
-        F_D = 0.5*np.sum(INT0.T+INT1.T, axis = 1)*d_theta # T x 1
-    
+        F_D = 0.5*np.sum(INT0.T+INT1.T, axis = 1)*d_theta 
         
         INT0 = (-P_star[0:-1,:] + 2*viscosity*V_y_star[0:-1,:])*Y_star[0:-1,:] + viscosity*(U_y_star[0:-1,:] + V_x_star[0:-1,:])*X_star[0:-1,:]
         INT1 = (-P_star[1: , :] + 2*viscosity*V_y_star[1: , :])*Y_star[1: , :] + viscosity*(U_y_star[1: , :] + V_x_star[1: , :])*X_star[1: , :]
             
-        F_L = 0.5*np.sum(INT0.T+INT1.T, axis = 1)*d_theta # T x 1
+        F_L = 0.5*np.sum(INT0.T+INT1.T, axis = 1)*d_theta 
             
         return F_D, F_L
     
@@ -234,40 +216,34 @@ if __name__ == "__main__":
     
     layers = [3] + 10*[4*50] + [4]
     
-    # Load Data
-    data = scipy.io.loadmat('../Data/Cylinder2D.mat')
+    data = scipy.io.loadmat('Cylinder2D.mat')
     
-    t_star = data['t_star'] # T x 1
-    x_star = data['x_star'] # N x 1
-    y_star = data['y_star'] # N x 1
+    t_star = data['t_star']
+    x_star = data['x_star'] 
+    y_star = data['y_star'] 
     
     T = t_star.shape[0]
     N = x_star.shape[0]
     
-    U_star = data['U_star'] # N x T
-    V_star = data['V_star'] # N x T
-    P_star = data['P_star'] # N x T
-    C_star = data['C_star'] # N x T
+    U_star = data['U_star']
+    V_star = data['V_star']
+    P_star = data['P_star']
+    C_star = data['C_star']
     
-    # Rearrange Data 
-    T_star = np.tile(t_star, (1,N)).T # N x T
-    X_star = np.tile(x_star, (1,T)) # N x T
-    Y_star = np.tile(y_star, (1,T)) # N x T
+    T_star = np.tile(t_star, (1,N)).T
+    X_star = np.tile(x_star, (1,T))
+    Y_star = np.tile(y_star, (1,T))
     
-    t = T_star.flatten()[:,None] # NT x 1
-    x = X_star.flatten()[:,None] # NT x 1
-    y = Y_star.flatten()[:,None] # NT x 1
-    u = U_star.flatten()[:,None] # NT x 1
-    v = V_star.flatten()[:,None] # NT x 1
-    p = P_star.flatten()[:,None] # NT x 1
-    c = C_star.flatten()[:,None] # NT x 1
+    t = T_star.flatten()[:,None] 
+    x = X_star.flatten()[:,None] 
+    y = Y_star.flatten()[:,None] 
+    u = U_star.flatten()[:,None] 
+    v = V_star.flatten()[:,None] 
+    p = P_star.flatten()[:,None] 
+    c = C_star.flatten()[:,None] 
     
-    ######################################################################
-    ######################## Training Data ###############################
-    ######################################################################
-    
-    T_data = T # int(sys.argv[1])
-    N_data = N # int(sys.argv[2])
+    T_data = T 
+    N_data = N 
     idx_t = np.concatenate([np.array([0]), np.random.choice(T-2, T_data-2, replace=False)+1, np.array([T-1])] )
     idx_x = np.random.choice(N, N_data, replace=False)
     t_data = T_star[:, idx_t][idx_x,:].flatten()[:,None]
@@ -283,14 +259,12 @@ if __name__ == "__main__":
     x_eqns = X_star[:, idx_t][idx_x,:].flatten()[:,None]
     y_eqns = Y_star[:, idx_t][idx_x,:].flatten()[:,None]
     
-    # Training Data on velocity (inlet)
     t_inlet = t[x == x.min()][:,None]
     x_inlet = x[x == x.min()][:,None]
     y_inlet = y[x == x.min()][:,None]
     u_inlet = u[x == x.min()][:,None]
     v_inlet = v[x == x.min()][:,None]
     
-    # Training
     model = HFM(t_data, x_data, y_data, c_data,
                 t_eqns, x_eqns, y_eqns,
                 t_inlet, x_inlet, y_inlet, u_inlet, v_inlet,
@@ -301,7 +275,6 @@ if __name__ == "__main__":
 
     F_D, F_L = model.predict_drag_lift(t_star)
     
-    # Test Data
     snap = np.array([100])
     t_test = T_star[:,snap]
     x_test = X_star[:,snap]
@@ -361,5 +334,6 @@ if __name__ == "__main__":
         print('Error v: %e' % (error_v))
         print('Error p: %e' % (error_p))
     
-    scipy.io.savemat('../Results/Cylinder2D_results_%s.mat' %(time.strftime('%d_%m_%Y')),
+    scipy.io.savemat('Cylinder2D_results_%s.mat' %(time.strftime('%d_%m_%Y')),
                      {'C_pred':C_pred, 'U_pred':U_pred, 'V_pred':V_pred, 'P_pred':P_pred, 'F_L':F_L, 'F_D':F_D})
+
